@@ -1,6 +1,35 @@
 // For more information, see https://crawlee.dev/
 import { PlaywrightCrawler, Configuration } from "crawlee";
 
+const COOKIE_PATTERNS = [
+  /cookie/i,
+  /cookies/i,
+  /gdpr/i,
+  /privacy policy/i,
+  /privacy settings/i,
+  /consent/i,
+  /accept all/i,
+  /reject all/i,
+  /we value your privacy/i,
+  /personalized ads/i,
+];
+
+function removeCookieText(text = "") {
+  if (!text) return "";
+  const containsCookieText = COOKIE_PATTERNS.some((pattern) => pattern.test(text));
+
+  // If the entire block is cookie-related and short, drop it altogether
+  if (containsCookieText && text.length <= 800) {
+    return "";
+  }
+
+  let cleaned = text;
+  COOKIE_PATTERNS.forEach((pattern) => {
+    cleaned = cleaned.replace(pattern, "");
+  });
+  return cleaned.trim();
+}
+
 /**
  * Scrapes a website and returns aggregated text content
  * @param {string} url - The starting URL to scrape
@@ -49,14 +78,27 @@ export async function scrapeWebsite(url, maxPages = 10) {
           return { headings, paragraphs, content };
         });
 
-        log.info(`Scraped ${request.loadedUrl} - Content length: ${metadata.content.length}`);
+        const cleanedContent = removeCookieText(metadata.content);
+        const cleanedParagraphs = metadata.paragraphs
+          .map((paragraph) => removeCookieText(paragraph))
+          .filter(Boolean);
+        const cleanedHeadings = metadata.headings
+          .map((heading) => ({
+            ...heading,
+            text: removeCookieText(heading.text),
+          }))
+          .filter((heading) => heading.text.length > 0);
+
+        log.info(`Scraped ${request.loadedUrl} - Content length: ${cleanedContent.length}`);
 
         // Store data in memory instead of file storage
         scrapedData.push({
           url: request.loadedUrl,
           requestedUrl: request.url,
           title,
-          ...metadata,
+          headings: cleanedHeadings,
+          paragraphs: cleanedParagraphs,
+          content: cleanedContent,
           crawledAt: new Date().toISOString(),
         });
 
