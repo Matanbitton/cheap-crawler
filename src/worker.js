@@ -58,4 +58,17 @@ worker.on("error", (err) => {
   console.error("[Worker] Worker error:", err);
 });
 
+// Keep process alive and handle graceful shutdown
+process.on("SIGTERM", async () => {
+  console.log("[Worker] SIGTERM received, closing worker gracefully...");
+  await worker.close();
+  process.exit(0);
+});
+
+process.on("SIGINT", async () => {
+  console.log("[Worker] SIGINT received, closing worker gracefully...");
+  await worker.close();
+  process.exit(0);
+});
+
 console.log("[Worker] Scraping worker started and ready to process jobs");

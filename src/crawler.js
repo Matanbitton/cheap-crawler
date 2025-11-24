@@ -1,5 +1,5 @@
 // For more information, see https://crawlee.dev/
-import { PlaywrightCrawler, Configuration } from "crawlee";
+import { PlaywrightCrawler } from "crawlee";
 import { MemoryStorage } from "@crawlee/memory-storage";
 
 const COOKIE_PATTERNS = [
@@ -65,14 +65,12 @@ function removeCookieSections(text = "") {
 export async function scrapeWebsite(url, maxPages = 10) {
   // Isolate each job with a fresh in-memory storage so crawls don't bleed together
   const storage = new MemoryStorage();
-  
-  // Set global config to use this storage instance for this crawl
-  Configuration.getGlobalConfig().set('storageClient', storage);
 
   // Collect scraped data in memory
   const scrapedData = [];
 
   const crawler = new PlaywrightCrawler({
+    storage,
     // Disable session pool to avoid file system access issues
     useSessionPool: false,
     async requestHandler({ request, page, enqueueLinks, log }) {
@@ -179,8 +177,13 @@ export async function scrapeWebsite(url, maxPages = 10) {
     ],
   });
 
-  // Run the crawler
-  await crawler.run([url]);
+  // Run the crawler - ensure the URL is properly formatted
+  try {
+    await crawler.run([url]);
+  } catch (error) {
+    console.error(`[Crawler] Error running crawler for ${url}:`, error);
+    throw error;
+  }
 
   // Aggregate all text content into a single string
   const aggregatedText = scrapedData
