@@ -67,22 +67,32 @@ export async function scrapeWebsite(url, maxPages = 10) {
   // This prevents concurrent crawls from seeing each other's enqueued URLs
   // We don't use storage for data - we collect everything in scrapedData array
   // Use a unique temp directory for each crawl - /tmp should always exist on Railway
-  const tempDir = `/tmp/crawlee-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+  const tempDir = `/tmp/crawlee-${Date.now()}-${Math.random()
+    .toString(36)
+    .substr(2, 9)}`;
   const storage = new MemoryStorage({
     localDataDirectory: tempDir,
   });
 
   // Set the storage in Configuration so the crawler uses it
   // Each crawl gets its own storage instance, so request queues are isolated
+  // We set it before creating the crawler, and the crawler captures the reference
+  // We don't restore it afterward to avoid race conditions with concurrent crawls
   const config = Configuration.getGlobalConfig();
-  const originalStorage = config.get("storageClient");
   config.set("storageClient", storage);
 
   try {
+    // Create a unique request queue for this crawl to ensure complete isolation
+    // Each crawl gets its own queue name, preventing any cross-contamination
+    const queueId = `queue-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+    const requestQueue = await storage.requestQueues().getOrCreate(queueId);
+
     // Collect scraped data in memory (we don't use Crawlee's storage for data)
     const scrapedData = [];
 
     const crawler = new PlaywrightCrawler({
+      // Use our unique request queue
+      requestQueue,
       // Disable session pool to avoid file system access issues
       useSessionPool: false,
       async requestHandler({ request, page, enqueueLinks, log }) {
@@ -215,12 +225,9 @@ export async function scrapeWebsite(url, maxPages = 10) {
       pagesScraped: scrapedData.length,
       urls: scrapedData.map((page) => page.url),
     };
-  } finally {
-    // Restore original storage
-    if (originalStorage !== undefined) {
-      config.set("storageClient", originalStorage);
-    } else {
-      config.set("storageClient", undefined);
-    }
   }
+  // Note: We don't restore the global config here because:
+  // 1. Each crawler captures its storage reference when created, so it's safe
+  // 2. Restoring would cause race conditions with concurrent crawls
+  // 3. Each new crawl will set its own storage anyway
 }
