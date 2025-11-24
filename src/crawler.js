@@ -1,5 +1,6 @@
 // For more information, see https://crawlee.dev/
-import { PlaywrightCrawler } from "crawlee";
+import { PlaywrightCrawler, Configuration } from "crawlee";
+import { MemoryStorage } from "@crawlee/memory-storage";
 
 const COOKIE_PATTERNS = [
   /cookie/i,
@@ -62,10 +63,24 @@ function removeCookieSections(text = "") {
  * @returns {Promise<{text: string, pagesScraped: number, urls: string[]}>}
  */
 export async function scrapeWebsite(url, maxPages = 10) {
-  // Collect scraped data in memory (we don't use Crawlee's storage for data)
-  const scrapedData = [];
+  // Create isolated storage for this crawl to prevent request queue conflicts
+  // Each crawl gets its own unique storage instance so requests don't interfere
+  const storage = new MemoryStorage();
+  
+  // Temporarily set global config to use our isolated storage
+  // This ensures each crawl has its own request queue
+  // Once the crawler is created, it has its own reference to the storage,
+  // so concurrent crawls won't interfere with each other
+  const globalConfig = Configuration.getGlobalConfig();
+  const originalStorage = globalConfig.get('storageClient');
+  
+  try {
+    globalConfig.set('storageClient', storage);
 
-  const crawler = new PlaywrightCrawler({
+    // Collect scraped data in memory (we don't use Crawlee's storage for data)
+    const scrapedData = [];
+
+    const crawler = new PlaywrightCrawler({
     // Disable session pool to avoid file system access issues
     useSessionPool: false,
     async requestHandler({ request, page, enqueueLinks, log }) {
@@ -172,24 +187,34 @@ export async function scrapeWebsite(url, maxPages = 10) {
     ],
   });
 
-  // Run the crawler - ensure the URL is properly formatted
-  try {
-    await crawler.run([url]);
-  } catch (error) {
-    console.error(`[Crawler] Error running crawler for ${url}:`, error);
-    throw error;
+    // Run the crawler - ensure the URL is properly formatted
+    try {
+      await crawler.run([url]);
+    } catch (error) {
+      console.error(`[Crawler] Error running crawler for ${url}:`, error);
+      throw error;
+    }
+
+    // Aggregate all text content into a single string
+    const aggregatedText = scrapedData
+      .map((page) => page.content)
+      .filter(Boolean)
+      .join("\n\n")
+      .trim();
+
+    return {
+      text: aggregatedText,
+      pagesScraped: scrapedData.length,
+      urls: scrapedData.map((page) => page.url),
+    };
+  } finally {
+    // Restore original storage
+    // Note: This is safe because once the crawler is created, it has its own
+    // reference to the storage instance, so changing the global config won't affect it
+    if (originalStorage !== undefined) {
+      globalConfig.set('storageClient', originalStorage);
+    } else {
+      globalConfig.delete('storageClient');
+    }
   }
-
-  // Aggregate all text content into a single string
-  const aggregatedText = scrapedData
-    .map((page) => page.content)
-    .filter(Boolean)
-    .join("\n\n")
-    .trim();
-
-  return {
-    text: aggregatedText,
-    pagesScraped: scrapedData.length,
-    urls: scrapedData.map((page) => page.url),
-  };
 }

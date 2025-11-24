@@ -41,10 +41,10 @@ queueEvents.waitUntilReady().catch((error) => {
 export function createWorker(processJob) {
   return new Worker("scrape-jobs", processJob, {
     connection: redisConnection,
-    concurrency: 1, // Process one job at a time per worker
+    concurrency: 3, // Process up to 3 jobs concurrently
     limiter: {
-      max: 1,
-      duration: 2000, // Max 1 job per 2 seconds per worker
+      max: 3,
+      duration: 1000, // Max 3 jobs per second per worker
     },
   });
 }
