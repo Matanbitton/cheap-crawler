@@ -132,11 +132,47 @@ export async function scrapeWebsite(url, maxPages = 10) {
       } catch (error) {
         log.error(`Error processing ${request.url}: ${error.message}`);
         // Continue crawling even if one page fails
+      } finally {
+        // Ensure page is closed to free resources
+        try {
+          await page.close();
+        } catch (e) {
+          // Ignore close errors
+        }
       }
     },
     maxRequestsPerCrawl: maxPages,
     requestHandlerTimeoutSecs: 60, // 60 second timeout per page
     maxConcurrency: 1, // Process one page at a time to avoid conflicts
+    // Use headless browser with minimal resources
+    launchContext: {
+      launchOptions: {
+        headless: true,
+        args: [
+          '--no-sandbox',
+          '--disable-setuid-sandbox',
+          '--disable-dev-shm-usage',
+          '--disable-accelerated-2d-canvas',
+          '--disable-gpu',
+          '--disable-web-security',
+          '--disable-features=IsolateOrigins,site-per-process',
+        ],
+      },
+    },
+    // Ensure browsers are properly closed
+    postNavigationHooks: [
+      async ({ page }) => {
+        // Clean up after navigation
+        try {
+          await page.evaluate(() => {
+            // Clear any heavy resources
+            if (window.stop) window.stop();
+          });
+        } catch (e) {
+          // Ignore
+        }
+      },
+    ],
   });
 
   // Run the crawler
