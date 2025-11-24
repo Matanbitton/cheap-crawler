@@ -66,130 +66,134 @@ export async function scrapeWebsite(url, maxPages = 10) {
   // We only need storage to create an isolated request queue for this crawl
   // This prevents concurrent crawls from seeing each other's enqueued URLs
   // We don't use storage for data - we collect everything in scrapedData array
-  const storage = new MemoryStorage();
+  // Use a unique temp directory for each crawl - /tmp should always exist on Railway
+  const tempDir = `/tmp/crawlee-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+  const storage = new MemoryStorage({
+    localDataDirectory: tempDir,
+  });
 
   // Set the storage in Configuration so the crawler uses it
   // Each crawl gets its own storage instance, so request queues are isolated
   const config = Configuration.getGlobalConfig();
-  const originalStorage = config.get('storageClient');
-  config.set('storageClient', storage);
+  const originalStorage = config.get("storageClient");
+  config.set("storageClient", storage);
 
   try {
     // Collect scraped data in memory (we don't use Crawlee's storage for data)
     const scrapedData = [];
 
     const crawler = new PlaywrightCrawler({
-    // Disable session pool to avoid file system access issues
-    useSessionPool: false,
-    async requestHandler({ request, page, enqueueLinks, log }) {
-      try {
-        log.info(`Processing ${request.url}`);
-
-        // Set reasonable timeouts
-        page.setDefaultTimeout(30000); // 30 seconds
-
-        await page.waitForLoadState("domcontentloaded", { timeout: 30000 });
-        // Give a bit of time for JavaScript-rendered content
-        await page.waitForTimeout(1000);
-
-        const title = await page.title();
-        const metadata = await page.evaluate(() => {
-          // Simple extraction - just get all text from the body
-          const content = (
-            document.body.innerText ||
-            document.body.textContent ||
-            ""
-          )
-            .replace(/\s+/g, " ")
-            .trim();
-
-          const headings = Array.from(
-            document.querySelectorAll("h1, h2, h3")
-          ).map((heading) => ({
-            level: heading.tagName,
-            text: heading.innerText.trim(),
-          }));
-
-          const paragraphs = Array.from(document.querySelectorAll("p"))
-            .map((p) => p.innerText.trim())
-            .filter(Boolean);
-
-          return { headings, paragraphs, content };
-        });
-
-        const cleanedParagraphs = metadata.paragraphs
-          .map((paragraph) => removeCookieSections(paragraph))
-          .filter(Boolean);
-        const cleanedHeadings = metadata.headings
-          .map((heading) => ({
-            ...heading,
-            text: removeCookieSections(heading.text),
-          }))
-          .filter((heading) => heading.text.length > 0);
-        const cleanedContent = removeCookieSections(metadata.content);
-
-        log.info(
-          `Scraped ${request.loadedUrl} - Content length: ${cleanedContent.length}`
-        );
-
-        // Store data in memory instead of file storage
-        scrapedData.push({
-          url: request.loadedUrl,
-          requestedUrl: request.url,
-          title,
-          headings: cleanedHeadings,
-          paragraphs: cleanedParagraphs,
-          content: cleanedContent,
-          crawledAt: new Date().toISOString(),
-        });
-
-        // Stay on the same domain while exploring links.
-        await enqueueLinks({ strategy: "same-domain" });
-      } catch (error) {
-        log.error(`Error processing ${request.url}: ${error.message}`);
-        // Continue crawling even if one page fails
-      } finally {
-        // Ensure page is closed to free resources
+      // Disable session pool to avoid file system access issues
+      useSessionPool: false,
+      async requestHandler({ request, page, enqueueLinks, log }) {
         try {
-          await page.close();
-        } catch (e) {
-          // Ignore close errors
-        }
-      }
-    },
-    maxRequestsPerCrawl: maxPages,
-    requestHandlerTimeoutSecs: 60, // 60 second timeout per page
-    maxConcurrency: 3, // Process up to 3 pages concurrently per website for faster crawling
-    // Use headless browser with minimal resources
-    launchContext: {
-      launchOptions: {
-        headless: true,
-        args: [
-          "--no-sandbox",
-          "--disable-setuid-sandbox",
-          "--disable-dev-shm-usage",
-          "--disable-accelerated-2d-canvas",
-          "--disable-gpu",
-          "--disable-web-security",
-          "--disable-features=IsolateOrigins,site-per-process",
-        ],
-      },
-    },
-    // Ensure browsers are properly closed
-    postNavigationHooks: [
-      async ({ page }) => {
-        // Clean up after navigation
-        try {
-          await page.evaluate(() => {
-            // Clear any heavy resources
-            if (window.stop) window.stop();
+          log.info(`Processing ${request.url}`);
+
+          // Set reasonable timeouts
+          page.setDefaultTimeout(30000); // 30 seconds
+
+          await page.waitForLoadState("domcontentloaded", { timeout: 30000 });
+          // Give a bit of time for JavaScript-rendered content
+          await page.waitForTimeout(1000);
+
+          const title = await page.title();
+          const metadata = await page.evaluate(() => {
+            // Simple extraction - just get all text from the body
+            const content = (
+              document.body.innerText ||
+              document.body.textContent ||
+              ""
+            )
+              .replace(/\s+/g, " ")
+              .trim();
+
+            const headings = Array.from(
+              document.querySelectorAll("h1, h2, h3")
+            ).map((heading) => ({
+              level: heading.tagName,
+              text: heading.innerText.trim(),
+            }));
+
+            const paragraphs = Array.from(document.querySelectorAll("p"))
+              .map((p) => p.innerText.trim())
+              .filter(Boolean);
+
+            return { headings, paragraphs, content };
           });
-        } catch (e) {
-          // Ignore
+
+          const cleanedParagraphs = metadata.paragraphs
+            .map((paragraph) => removeCookieSections(paragraph))
+            .filter(Boolean);
+          const cleanedHeadings = metadata.headings
+            .map((heading) => ({
+              ...heading,
+              text: removeCookieSections(heading.text),
+            }))
+            .filter((heading) => heading.text.length > 0);
+          const cleanedContent = removeCookieSections(metadata.content);
+
+          log.info(
+            `Scraped ${request.loadedUrl} - Content length: ${cleanedContent.length}`
+          );
+
+          // Store data in memory instead of file storage
+          scrapedData.push({
+            url: request.loadedUrl,
+            requestedUrl: request.url,
+            title,
+            headings: cleanedHeadings,
+            paragraphs: cleanedParagraphs,
+            content: cleanedContent,
+            crawledAt: new Date().toISOString(),
+          });
+
+          // Stay on the same domain while exploring links.
+          await enqueueLinks({ strategy: "same-domain" });
+        } catch (error) {
+          log.error(`Error processing ${request.url}: ${error.message}`);
+          // Continue crawling even if one page fails
+        } finally {
+          // Ensure page is closed to free resources
+          try {
+            await page.close();
+          } catch (e) {
+            // Ignore close errors
+          }
         }
       },
-    ],
-  });
+      maxRequestsPerCrawl: maxPages,
+      requestHandlerTimeoutSecs: 60, // 60 second timeout per page
+      maxConcurrency: 3, // Process up to 3 pages concurrently per website for faster crawling
+      // Use headless browser with minimal resources
+      launchContext: {
+        launchOptions: {
+          headless: true,
+          args: [
+            "--no-sandbox",
+            "--disable-setuid-sandbox",
+            "--disable-dev-shm-usage",
+            "--disable-accelerated-2d-canvas",
+            "--disable-gpu",
+            "--disable-web-security",
+            "--disable-features=IsolateOrigins,site-per-process",
+          ],
+        },
+      },
+      // Ensure browsers are properly closed
+      postNavigationHooks: [
+        async ({ page }) => {
+          // Clean up after navigation
+          try {
+            await page.evaluate(() => {
+              // Clear any heavy resources
+              if (window.stop) window.stop();
+            });
+          } catch (e) {
+            // Ignore
+          }
+        },
+      ],
+    });
 
     // Run the crawler - ensure the URL is properly formatted
     try {
@@ -214,9 +218,9 @@ export async function scrapeWebsite(url, maxPages = 10) {
   } finally {
     // Restore original storage
     if (originalStorage !== undefined) {
-      config.set('storageClient', originalStorage);
+      config.set("storageClient", originalStorage);
     } else {
-      config.set('storageClient', undefined);
+      config.set("storageClient", undefined);
     }
   }
 }
