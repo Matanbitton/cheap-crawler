@@ -73,6 +73,8 @@ export async function scrapeWebsite(url, maxPages = 10) {
   const scrapedData = [];
 
   const crawler = new PlaywrightCrawler({
+    // Disable session pool to avoid file system access issues
+    useSessionPool: false,
     async requestHandler({ request, page, enqueueLinks, log }) {
       try {
         log.info(`Processing ${request.url}`);
