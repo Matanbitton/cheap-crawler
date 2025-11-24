@@ -1,6 +1,6 @@
 import express from "express";
 import cors from "cors";
-import { scrapeQueue } from "./queue.js";
+import { scrapeQueue, queueEvents } from "./queue.js";
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -82,7 +82,7 @@ async function handleScrapeRequest(req, res) {
     // Wait for job to complete (with timeout)
     const timeout = 300000; // 5 minutes max
     const result = await Promise.race([
-      job.finished(),
+      job.waitUntilFinished(queueEvents),
       new Promise((_, reject) =>
         setTimeout(() => reject(new Error("Job timeout")), timeout)
       ),

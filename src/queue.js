@@ -1,4 +1,4 @@
-import { Queue, Worker } from "bullmq";
+import { Queue, Worker, QueueEvents } from "bullmq";
 import Redis from "ioredis";
 
 // Redis connection - Railway provides REDIS_URL env var
@@ -27,6 +27,14 @@ export const scrapeQueue = new Queue("scrape-jobs", {
       age: 86400, // Keep failed jobs for 24 hours
     },
   },
+});
+
+export const queueEvents = new QueueEvents("scrape-jobs", {
+  connection: redisConnection,
+});
+
+queueEvents.waitUntilReady().catch((error) => {
+  console.error("[QueueEvents] Failed to initialize queue events", error);
 });
 
 // Worker to process scraping jobs
