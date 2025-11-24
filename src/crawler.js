@@ -184,27 +184,26 @@ export async function scrapeWebsite(url, maxPages = 10) {
     ],
   });
 
-    // Run the crawler - ensure the URL is properly formatted
-    try {
-      await crawler.run([url]);
-    } catch (error) {
-      console.error(`[Crawler] Error running crawler for ${url}:`, error);
-      throw error;
-    }
-
-    // Aggregate all text content into a single string
-    const aggregatedText = scrapedData
-      .map((page) => page.content)
-      .filter(Boolean)
-      .join("\n\n")
-      .trim();
-
-    return {
-      text: aggregatedText,
-      pagesScraped: scrapedData.length,
-      urls: scrapedData.map((page) => page.url),
-    };
+  // Run the crawler - ensure the URL is properly formatted
+  try {
+    await crawler.run([url]);
+  } catch (error) {
+    console.error(`[Crawler] Error running crawler for ${url}:`, error);
+    throw error;
   }
+
+  // Aggregate all text content into a single string
+  const aggregatedText = scrapedData
+    .map((page) => page.content)
+    .filter(Boolean)
+    .join("\n\n")
+    .trim();
+
+  return {
+    text: aggregatedText,
+    pagesScraped: scrapedData.length,
+    urls: scrapedData.map((page) => page.url),
+  };
   // No cleanup needed - storage and queue are scoped to this function
   // They'll be garbage collected when the function completes
 }
