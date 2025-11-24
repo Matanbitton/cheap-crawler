@@ -1,5 +1,5 @@
 // For more information, see https://crawlee.dev/
-import { PlaywrightCrawler } from "crawlee";
+import { PlaywrightCrawler, Configuration } from "crawlee";
 import { MemoryStorage } from "@crawlee/memory-storage";
 
 const COOKIE_PATTERNS = [
@@ -67,26 +67,27 @@ export async function scrapeWebsite(url, maxPages = 10) {
   // This prevents concurrent crawls from seeing each other's enqueued URLs
   // We don't use storage for data - we collect everything in scrapedData array
   const storage = new MemoryStorage();
-  
-  // Create a unique request queue for this crawl to ensure isolation
-  const queueId = `queue-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
-  const requestQueue = await storage.requestQueues().getOrCreate(queueId);
 
-  // Collect scraped data in memory (we don't use Crawlee's storage for data)
-  const scrapedData = [];
+  // Set the storage in Configuration so the crawler uses it
+  // Each crawl gets its own storage instance, so request queues are isolated
+  const config = Configuration.getGlobalConfig();
+  const originalStorage = config.get('storageClient');
+  config.set('storageClient', storage);
 
-  const crawler = new PlaywrightCrawler({
-    // Use our isolated request queue - this is the ONLY reason we need storage
-    requestQueue,
+  try {
+    // Collect scraped data in memory (we don't use Crawlee's storage for data)
+    const scrapedData = [];
+
+    const crawler = new PlaywrightCrawler({
     // Disable session pool to avoid file system access issues
     useSessionPool: false,
     async requestHandler({ request, page, enqueueLinks, log }) {
       try {
         log.info(`Processing ${request.url}`);
-        
+
         // Set reasonable timeouts
         page.setDefaultTimeout(30000); // 30 seconds
-        
+
         await page.waitForLoadState("domcontentloaded", { timeout: 30000 });
         // Give a bit of time for JavaScript-rendered content
         await page.waitForTimeout(1000);
@@ -94,16 +95,20 @@ export async function scrapeWebsite(url, maxPages = 10) {
         const title = await page.title();
         const metadata = await page.evaluate(() => {
           // Simple extraction - just get all text from the body
-          const content = (document.body.innerText || document.body.textContent || "")
+          const content = (
+            document.body.innerText ||
+            document.body.textContent ||
+            ""
+          )
             .replace(/\s+/g, " ")
             .trim();
 
-          const headings = Array.from(document.querySelectorAll("h1, h2, h3")).map(
-            (heading) => ({
-              level: heading.tagName,
-              text: heading.innerText.trim(),
-            })
-          );
+          const headings = Array.from(
+            document.querySelectorAll("h1, h2, h3")
+          ).map((heading) => ({
+            level: heading.tagName,
+            text: heading.innerText.trim(),
+          }));
 
           const paragraphs = Array.from(document.querySelectorAll("p"))
             .map((p) => p.innerText.trim())
@@ -123,7 +128,9 @@ export async function scrapeWebsite(url, maxPages = 10) {
           .filter((heading) => heading.text.length > 0);
         const cleanedContent = removeCookieSections(metadata.content);
 
-        log.info(`Scraped ${request.loadedUrl} - Content length: ${cleanedContent.length}`);
+        log.info(
+          `Scraped ${request.loadedUrl} - Content length: ${cleanedContent.length}`
+        );
 
         // Store data in memory instead of file storage
         scrapedData.push({
@@ -158,13 +165,13 @@ export async function scrapeWebsite(url, maxPages = 10) {
       launchOptions: {
         headless: true,
         args: [
-          '--no-sandbox',
-          '--disable-setuid-sandbox',
-          '--disable-dev-shm-usage',
-          '--disable-accelerated-2d-canvas',
-          '--disable-gpu',
-          '--disable-web-security',
-          '--disable-features=IsolateOrigins,site-per-process',
+          "--no-sandbox",
+          "--disable-setuid-sandbox",
+          "--disable-dev-shm-usage",
+          "--disable-accelerated-2d-canvas",
+          "--disable-gpu",
+          "--disable-web-security",
+          "--disable-features=IsolateOrigins,site-per-process",
         ],
       },
     },
@@ -184,26 +191,32 @@ export async function scrapeWebsite(url, maxPages = 10) {
     ],
   });
 
-  // Run the crawler - ensure the URL is properly formatted
-  try {
-    await crawler.run([url]);
-  } catch (error) {
-    console.error(`[Crawler] Error running crawler for ${url}:`, error);
-    throw error;
+    // Run the crawler - ensure the URL is properly formatted
+    try {
+      await crawler.run([url]);
+    } catch (error) {
+      console.error(`[Crawler] Error running crawler for ${url}:`, error);
+      throw error;
+    }
+
+    // Aggregate all text content into a single string
+    const aggregatedText = scrapedData
+      .map((page) => page.content)
+      .filter(Boolean)
+      .join("\n\n")
+      .trim();
+
+    return {
+      text: aggregatedText,
+      pagesScraped: scrapedData.length,
+      urls: scrapedData.map((page) => page.url),
+    };
+  } finally {
+    // Restore original storage
+    if (originalStorage !== undefined) {
+      config.set('storageClient', originalStorage);
+    } else {
+      config.set('storageClient', undefined);
+    }
   }
-
-  // Aggregate all text content into a single string
-  const aggregatedText = scrapedData
-    .map((page) => page.content)
-    .filter(Boolean)
-    .join("\n\n")
-    .trim();
-
-  return {
-    text: aggregatedText,
-    pagesScraped: scrapedData.length,
-    urls: scrapedData.map((page) => page.url),
-  };
-  // No cleanup needed - storage and queue are scoped to this function
-  // They'll be garbage collected when the function completes
 }
