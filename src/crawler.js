@@ -66,16 +66,13 @@ export async function scrapeWebsite(url, maxPages = 10) {
   // Isolate each job with a fresh in-memory storage so crawls don't bleed together
   const storage = new MemoryStorage();
   
-  // Configure Crawlee to use this storage instance
-  const config = new Configuration({
-    storageClient: storage,
-  });
+  // Set global config to use this storage instance for this crawl
+  Configuration.getGlobalConfig().set('storageClient', storage);
 
   // Collect scraped data in memory
   const scrapedData = [];
 
   const crawler = new PlaywrightCrawler({
-    config,
     async requestHandler({ request, page, enqueueLinks, log }) {
       try {
         log.info(`Processing ${request.url}`);
