@@ -1,6 +1,4 @@
-// For more information, see https://crawlee.dev/
-import { PlaywrightCrawler, Configuration } from "crawlee";
-import { MemoryStorage } from "@crawlee/memory-storage";
+import { chromium } from "playwright";
 
 const COOKIE_PATTERNS = [
   /cookie/i,
@@ -57,58 +55,95 @@ function removeCookieSections(text = "") {
 }
 
 /**
+ * Extract links from a page that are on the same domain
+ */
+function extractSameDomainLinks(pageUrl, html) {
+  try {
+    const baseUrl = new URL(pageUrl);
+    const links = [];
+    const linkRegex = /<a[^>]+href=["']([^"']+)["'][^>]*>/gi;
+    let match;
+
+    while ((match = linkRegex.exec(html)) !== null) {
+      try {
+        const href = match[1];
+        // Resolve relative URLs
+        const absoluteUrl = new URL(href, baseUrl).href;
+        const urlObj = new URL(absoluteUrl);
+        
+        // Only include same domain
+        if (urlObj.hostname === baseUrl.hostname) {
+          links.push(absoluteUrl);
+        }
+      } catch (e) {
+        // Invalid URL, skip
+      }
+    }
+
+    return [...new Set(links)]; // Remove duplicates
+  } catch (e) {
+    return [];
+  }
+}
+
+/**
  * Scrapes a website and returns aggregated text content
+ * Uses Playwright directly - no Crawlee, no shared state, fully isolated
  * @param {string} url - The starting URL to scrape
  * @param {number} maxPages - Maximum number of pages to scrape (default: 10)
  * @returns {Promise<{text: string, pagesScraped: number, urls: string[]}>}
  */
 export async function scrapeWebsite(url, maxPages = 10) {
-  // We only need storage to create an isolated request queue for this crawl
-  // This prevents concurrent crawls from seeing each other's enqueued URLs
-  // We don't use storage for data - we collect everything in scrapedData array
-  // Use a unique temp directory for each crawl - /tmp should always exist on Railway
-  const tempDir = `/tmp/crawlee-${Date.now()}-${Math.random()
-    .toString(36)
-    .substr(2, 9)}`;
-  const storage = new MemoryStorage({
-    localDataDirectory: tempDir,
+  const scrapedData = [];
+  const visitedUrls = new Set();
+  const urlQueue = [url];
+  const baseUrl = new URL(url);
+
+  // Launch browser for this crawl - completely isolated
+  const browser = await chromium.launch({
+    headless: true,
+    args: [
+      "--no-sandbox",
+      "--disable-setuid-sandbox",
+      "--disable-dev-shm-usage",
+      "--disable-accelerated-2d-canvas",
+      "--disable-gpu",
+      "--disable-web-security",
+      "--disable-features=IsolateOrigins,site-per-process",
+    ],
   });
 
-  // Set the storage in Configuration so the crawler uses it
-  // Each crawl gets its own storage instance, so request queues are isolated
-  // We set it before creating the crawler, and the crawler captures the reference
-  // We don't restore it afterward to avoid race conditions with concurrent crawls
-  const config = Configuration.getGlobalConfig();
-  config.set("storageClient", storage);
-
   try {
-    // Create a unique request queue for this crawl to ensure complete isolation
-    // Each crawl gets its own queue name, preventing any cross-contamination
-    const queueId = `queue-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
-    const requestQueue = await storage.requestQueues().getOrCreate(queueId);
+    // Process URLs from queue until we reach maxPages or queue is empty
+    while (urlQueue.length > 0 && scrapedData.length < maxPages) {
+      const currentUrl = urlQueue.shift();
 
-    // Collect scraped data in memory (we don't use Crawlee's storage for data)
-    const scrapedData = [];
+      // Skip if already visited
+      if (visitedUrls.has(currentUrl)) {
+        continue;
+      }
 
-    const crawler = new PlaywrightCrawler({
-      // Use our unique request queue
-      requestQueue,
-      // Disable session pool to avoid file system access issues
-      useSessionPool: false,
-      async requestHandler({ request, page, enqueueLinks, log }) {
+      visitedUrls.add(currentUrl);
+
+      try {
+        // Create a new page for each request - fully isolated
+        const page = await browser.newPage();
+        
         try {
-          log.info(`Processing ${request.url}`);
+          page.setDefaultTimeout(30000);
 
-          // Set reasonable timeouts
-          page.setDefaultTimeout(30000); // 30 seconds
+          // Navigate to the page
+          await page.goto(currentUrl, {
+            waitUntil: "domcontentloaded",
+            timeout: 30000,
+          });
 
-          await page.waitForLoadState("domcontentloaded", { timeout: 30000 });
-          // Give a bit of time for JavaScript-rendered content
+          // Wait a bit for JavaScript-rendered content
           await page.waitForTimeout(1000);
 
+          // Extract content
           const title = await page.title();
           const metadata = await page.evaluate(() => {
-            // Simple extraction - just get all text from the body
             const content = (
               document.body.innerText ||
               document.body.textContent ||
@@ -128,7 +163,7 @@ export async function scrapeWebsite(url, maxPages = 10) {
               .map((p) => p.innerText.trim())
               .filter(Boolean);
 
-            return { headings, paragraphs, content };
+            return { headings, paragraphs, content, html: document.documentElement.outerHTML };
           });
 
           const cleanedParagraphs = metadata.paragraphs
@@ -142,14 +177,11 @@ export async function scrapeWebsite(url, maxPages = 10) {
             .filter((heading) => heading.text.length > 0);
           const cleanedContent = removeCookieSections(metadata.content);
 
-          log.info(
-            `Scraped ${request.loadedUrl} - Content length: ${cleanedContent.length}`
-          );
+          console.log(`[Crawler] Scraped ${currentUrl} - Content length: ${cleanedContent.length}`);
 
-          // Store data in memory instead of file storage
+          // Store data
           scrapedData.push({
-            url: request.loadedUrl,
-            requestedUrl: request.url,
+            url: currentUrl,
             title,
             headings: cleanedHeadings,
             paragraphs: cleanedParagraphs,
@@ -157,77 +189,39 @@ export async function scrapeWebsite(url, maxPages = 10) {
             crawledAt: new Date().toISOString(),
           });
 
-          // Stay on the same domain while exploring links.
-          await enqueueLinks({ strategy: "same-domain" });
-        } catch (error) {
-          log.error(`Error processing ${request.url}: ${error.message}`);
-          // Continue crawling even if one page fails
+          // Extract links for same domain and add to queue (if we haven't reached maxPages)
+          if (scrapedData.length < maxPages) {
+            const links = extractSameDomainLinks(currentUrl, metadata.html);
+            for (const link of links) {
+              if (!visitedUrls.has(link) && !urlQueue.includes(link)) {
+                urlQueue.push(link);
+              }
+            }
+          }
         } finally {
-          // Ensure page is closed to free resources
-          try {
-            await page.close();
-          } catch (e) {
-            // Ignore close errors
-          }
+          // Always close the page
+          await page.close();
         }
-      },
-      maxRequestsPerCrawl: maxPages,
-      requestHandlerTimeoutSecs: 60, // 60 second timeout per page
-      maxConcurrency: 3, // Process up to 3 pages concurrently per website for faster crawling
-      // Use headless browser with minimal resources
-      launchContext: {
-        launchOptions: {
-          headless: true,
-          args: [
-            "--no-sandbox",
-            "--disable-setuid-sandbox",
-            "--disable-dev-shm-usage",
-            "--disable-accelerated-2d-canvas",
-            "--disable-gpu",
-            "--disable-web-security",
-            "--disable-features=IsolateOrigins,site-per-process",
-          ],
-        },
-      },
-      // Ensure browsers are properly closed
-      postNavigationHooks: [
-        async ({ page }) => {
-          // Clean up after navigation
-          try {
-            await page.evaluate(() => {
-              // Clear any heavy resources
-              if (window.stop) window.stop();
-            });
-          } catch (e) {
-            // Ignore
-          }
-        },
-      ],
-    });
-
-    // Run the crawler - ensure the URL is properly formatted
-    try {
-      await crawler.run([url]);
-    } catch (error) {
-      console.error(`[Crawler] Error running crawler for ${url}:`, error);
-      throw error;
+      } catch (error) {
+        console.error(`[Crawler] Error processing ${currentUrl}:`, error.message);
+        // Continue with next URL
+      }
     }
-
-    // Aggregate all text content into a single string
-    const aggregatedText = scrapedData
-      .map((page) => page.content)
-      .filter(Boolean)
-      .join("\n\n")
-      .trim();
-
-    return {
-      text: aggregatedText,
-      pagesScraped: scrapedData.length,
-      urls: scrapedData.map((page) => page.url),
-    };
+  } finally {
+    // Always close the browser
+    await browser.close();
   }
-  // Note: We don't restore the global config here because:
-  // 1. Each crawler captures its storage reference when created, so it's safe
-  // 2. Restoring would cause race conditions with concurrent crawls
-  // 3. Each new crawl will set its own storage anyway
+
+  // Aggregate all text content into a single string
+  const aggregatedText = scrapedData
+    .map((page) => page.content)
+    .filter(Boolean)
+    .join("\n\n")
+    .trim();
+
+  return {
+    text: aggregatedText,
+    pagesScraped: scrapedData.length,
+    urls: scrapedData.map((page) => page.url),
+  };
 }
