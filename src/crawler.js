@@ -1,5 +1,40 @@
 import { chromium } from "playwright";
 
+// Semaphore to limit concurrent browser launches and prevent resource exhaustion
+// This prevents EAGAIN errors when too many browsers try to launch at once
+class BrowserLaunchLimiter {
+  constructor(maxConcurrent = 5) {
+    this.maxConcurrent = maxConcurrent;
+    this.activeLaunches = 0;
+    this.waitQueue = [];
+  }
+
+  async acquire() {
+    return new Promise((resolve) => {
+      if (this.activeLaunches < this.maxConcurrent) {
+        this.activeLaunches++;
+        resolve();
+      } else {
+        this.waitQueue.push(resolve);
+      }
+    });
+  }
+
+  release() {
+    this.activeLaunches--;
+
+    // Process next waiting request
+    if (this.waitQueue.length > 0) {
+      const nextResolve = this.waitQueue.shift();
+      this.activeLaunches++;
+      nextResolve();
+    }
+  }
+}
+
+// Global limiter - ensures max 5 browsers launch concurrently
+const browserLaunchLimiter = new BrowserLaunchLimiter(5);
+
 const COOKIE_PATTERNS = [
   /cookie/i,
   /cookies/i,
@@ -206,19 +241,29 @@ export async function scrapeWebsite(url, maxPages = 10) {
   const baseUrl = new URL(url);
   const maxConcurrency = 3; // Process up to 3 pages concurrently
 
-  // Launch browser for this crawl - completely isolated
-  const browser = await chromium.launch({
-    headless: true,
-    args: [
-      "--no-sandbox",
-      "--disable-setuid-sandbox",
-      "--disable-dev-shm-usage",
-      "--disable-accelerated-2d-canvas",
-      "--disable-gpu",
-      "--disable-web-security",
-      "--disable-features=IsolateOrigins,site-per-process",
-    ],
-  });
+  // Wait for permission to launch browser (limits concurrent launches)
+  await browserLaunchLimiter.acquire();
+  
+  let browser;
+  try {
+    // Launch browser for this crawl - each crawl gets its own isolated browser
+    browser = await chromium.launch({
+      headless: true,
+      args: [
+        "--no-sandbox",
+        "--disable-setuid-sandbox",
+        "--disable-dev-shm-usage",
+        "--disable-accelerated-2d-canvas",
+        "--disable-gpu",
+        "--disable-web-security",
+        "--disable-features=IsolateOrigins,site-per-process",
+      ],
+    });
+  } catch (error) {
+    // Release the semaphore if launch fails
+    browserLaunchLimiter.release();
+    throw error;
+  }
 
   try {
     // Process URLs from queue until we reach maxPages or queue is empty
@@ -270,7 +315,13 @@ export async function scrapeWebsite(url, maxPages = 10) {
     }
   } finally {
     // Always close the browser
-    await browser.close();
+    try {
+      await browser.close();
+    } catch (e) {
+      // Ignore close errors
+    }
+    // Release the semaphore to allow next browser launch
+    browserLaunchLimiter.release();
   }
 
   // Aggregate all text content into a single string
