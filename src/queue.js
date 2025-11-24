@@ -41,11 +41,9 @@ queueEvents.waitUntilReady().catch((error) => {
 export function createWorker(processJob) {
   return new Worker("scrape-jobs", processJob, {
     connection: redisConnection,
-    concurrency: 3, // Process up to 3 jobs concurrently
-    limiter: {
-      max: 3,
-      duration: 1000, // Max 3 jobs per second per worker
-    },
+    concurrency: 15, // Process up to 15 websites concurrently for high throughput
+    // Removed limiter to allow continuous processing - Clay will control the rate
+    // Each website crawl is independent, so we can process many in parallel
   });
 }
 

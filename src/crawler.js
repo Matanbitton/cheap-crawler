@@ -1,5 +1,5 @@
 // For more information, see https://crawlee.dev/
-import { PlaywrightCrawler, Configuration } from "crawlee";
+import { PlaywrightCrawler } from "crawlee";
 import { MemoryStorage } from "@crawlee/memory-storage";
 
 const COOKIE_PATTERNS = [
@@ -63,24 +63,21 @@ function removeCookieSections(text = "") {
  * @returns {Promise<{text: string, pagesScraped: number, urls: string[]}>}
  */
 export async function scrapeWebsite(url, maxPages = 10) {
-  // Create isolated storage for this crawl to prevent request queue conflicts
-  // Each crawl gets its own unique storage instance so requests don't interfere
+  // We only need storage to create an isolated request queue for this crawl
+  // This prevents concurrent crawls from seeing each other's enqueued URLs
+  // We don't use storage for data - we collect everything in scrapedData array
   const storage = new MemoryStorage();
   
-  // Temporarily set global config to use our isolated storage
-  // This ensures each crawl has its own request queue
-  // Once the crawler is created, it has its own reference to the storage,
-  // so concurrent crawls won't interfere with each other
-  const globalConfig = Configuration.getGlobalConfig();
-  const originalStorage = globalConfig.get('storageClient');
-  
-  try {
-    globalConfig.set('storageClient', storage);
+  // Create a unique request queue for this crawl to ensure isolation
+  const queueId = `queue-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+  const requestQueue = await storage.requestQueues().getOrCreate(queueId);
 
-    // Collect scraped data in memory (we don't use Crawlee's storage for data)
-    const scrapedData = [];
+  // Collect scraped data in memory (we don't use Crawlee's storage for data)
+  const scrapedData = [];
 
-    const crawler = new PlaywrightCrawler({
+  const crawler = new PlaywrightCrawler({
+    // Use our isolated request queue - this is the ONLY reason we need storage
+    requestQueue,
     // Disable session pool to avoid file system access issues
     useSessionPool: false,
     async requestHandler({ request, page, enqueueLinks, log }) {
@@ -155,7 +152,7 @@ export async function scrapeWebsite(url, maxPages = 10) {
     },
     maxRequestsPerCrawl: maxPages,
     requestHandlerTimeoutSecs: 60, // 60 second timeout per page
-    maxConcurrency: 1, // Process one page at a time to avoid conflicts
+    maxConcurrency: 3, // Process up to 3 pages concurrently per website for faster crawling
     // Use headless browser with minimal resources
     launchContext: {
       launchOptions: {
@@ -207,14 +204,7 @@ export async function scrapeWebsite(url, maxPages = 10) {
       pagesScraped: scrapedData.length,
       urls: scrapedData.map((page) => page.url),
     };
-  } finally {
-    // Restore original storage
-    // Note: This is safe because once the crawler is created, it has its own
-    // reference to the storage instance, so changing the global config won't affect it
-    if (originalStorage !== undefined) {
-      globalConfig.set('storageClient', originalStorage);
-    } else {
-      globalConfig.delete('storageClient');
-    }
   }
+  // No cleanup needed - storage and queue are scoped to this function
+  // They'll be garbage collected when the function completes
 }
