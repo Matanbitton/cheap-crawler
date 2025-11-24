@@ -10,24 +10,49 @@ const COOKIE_PATTERNS = [
   /consent/i,
   /accept all/i,
   /reject all/i,
-  /we value your privacy/i,
+  /manage preferences/i,
   /personalized ads/i,
+  /we value your privacy/i,
+  /tracking technologies/i,
 ];
 
-function removeCookieText(text = "") {
+const COOKIE_SECTION_SPLIT_REGEX = /\n{2,}|\r{2,}/;
+
+function isCookieText(text = "") {
+  if (!text) return false;
+  return COOKIE_PATTERNS.some((pattern) => pattern.test(text));
+}
+
+function removeCookieSections(text = "") {
   if (!text) return "";
-  const containsCookieText = COOKIE_PATTERNS.some((pattern) => pattern.test(text));
 
-  // If the entire block is cookie-related and short, drop it altogether
-  if (containsCookieText && text.length <= 800) {
-    return "";
-  }
+  const sections = text
+    .replace(/\r\n/g, "\n")
+    .split(COOKIE_SECTION_SPLIT_REGEX)
+    .map((section) => section.trim())
+    .filter(Boolean);
 
-  let cleaned = text;
-  COOKIE_PATTERNS.forEach((pattern) => {
-    cleaned = cleaned.replace(pattern, "");
-  });
-  return cleaned.trim();
+  const filtered = sections
+    .filter((section) => {
+      if (!section) return false;
+      // Drop sections that are mostly cookie text or very short and contain cookie keywords
+      if (isCookieText(section) && section.length <= 1200) {
+        return false;
+      }
+      // Drop sections that mention cookies multiple times even if long
+      const keywordMatches = COOKIE_PATTERNS.reduce((count, pattern) => {
+        const matches = section.match(pattern);
+        return count + (matches ? matches.length : 0);
+      }, 0);
+      if (keywordMatches >= 2) {
+        return false;
+      }
+      return true;
+    })
+    .map((section) => section.replace(/\s+/g, " ").trim())
+    .filter(Boolean);
+
+  return filtered.join("\n\n").trim();
 }
 
 /**
@@ -78,16 +103,16 @@ export async function scrapeWebsite(url, maxPages = 10) {
           return { headings, paragraphs, content };
         });
 
-        const cleanedContent = removeCookieText(metadata.content);
         const cleanedParagraphs = metadata.paragraphs
-          .map((paragraph) => removeCookieText(paragraph))
+          .map((paragraph) => removeCookieSections(paragraph))
           .filter(Boolean);
         const cleanedHeadings = metadata.headings
           .map((heading) => ({
             ...heading,
-            text: removeCookieText(heading.text),
+            text: removeCookieSections(heading.text),
           }))
           .filter((heading) => heading.text.length > 0);
+        const cleanedContent = removeCookieSections(metadata.content);
 
         log.info(`Scraped ${request.loadedUrl} - Content length: ${cleanedContent.length}`);
 
