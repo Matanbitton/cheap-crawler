@@ -65,11 +65,16 @@ function removeCookieSections(text = "") {
 export async function scrapeWebsite(url, maxPages = 10) {
   // Isolate each job with a fresh in-memory storage/queue so crawls don't bleed together
   const storage = new MemoryStorage();
+  const requestQueue = await storage.requestQueues.getOrCreate(
+    `queue-${Date.now()}-${Math.random().toString(16).slice(2)}`
+  );
 
   // Collect scraped data in memory
   const scrapedData = [];
 
   const crawler = new PlaywrightCrawler({
+    storageClient: storage.storageClient,
+    requestQueue,
     storageClient: storage.storageClient,
     async requestHandler({ request, page, enqueueLinks, log }) {
       try {
