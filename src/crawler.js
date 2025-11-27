@@ -51,6 +51,8 @@ const COOKIE_PATTERNS = [
 ];
 
 const COOKIE_SECTION_SPLIT_REGEX = /\n{2,}|\r{2,}/;
+const EMAIL_REGEX =
+  /[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}(?:\.[a-z]{2,})?/gi;
 
 function isCookieText(text = "") {
   if (!text) return false;
@@ -87,6 +89,13 @@ function removeCookieSections(text = "") {
     .filter(Boolean);
 
   return filtered.join("\n\n").trim();
+}
+
+function extractEmails(text = "") {
+  if (!text) return [];
+  const matches = text.match(EMAIL_REGEX);
+  if (!matches) return [];
+  return matches.map((email) => email.toLowerCase());
 }
 
 /**
@@ -209,6 +218,12 @@ async function processUrl(
       `[Crawler] Scraped ${url} - Content length: ${cleanedContent.length}`
     );
 
+    // Extract emails from the page content
+    const pageEmails = new Set([
+      ...extractEmails(metadata.content),
+      ...cleanedParagraphs.flatMap((paragraph) => extractEmails(paragraph)),
+    ]);
+
     // Store data
     const pageData = {
       url,
@@ -225,7 +240,7 @@ async function processUrl(
       links = await extractSameDomainLinks(page, baseUrl);
     }
 
-    return { pageData, links };
+    return { pageData, links, emails: Array.from(pageEmails) };
   } catch (error) {
     console.error(`[Crawler] Error processing ${url}:`, error.message);
     return null;
@@ -240,10 +255,11 @@ export async function scrapeWebsite(url, maxPages = 10) {
   const urlQueue = [url];
   const baseUrl = new URL(url);
   const maxConcurrency = 3; // Process up to 3 pages concurrently
+  const emailSet = new Set();
 
   // Wait for permission to launch browser (limits concurrent launches)
   await browserLaunchLimiter.acquire();
-  
+
   let browser;
   try {
     // Launch browser for this crawl - each crawl gets its own isolated browser
@@ -303,6 +319,7 @@ export async function scrapeWebsite(url, maxPages = 10) {
       for (const result of results) {
         if (result) {
           scrapedData.push(result.pageData);
+          result.emails.forEach((email) => emailSet.add(email));
 
           // Add new links to queue
           for (const link of result.links) {
@@ -335,5 +352,6 @@ export async function scrapeWebsite(url, maxPages = 10) {
     text: aggregatedText,
     pagesScraped: scrapedData.length,
     urls: scrapedData.map((page) => page.url),
+    emails: Array.from(emailSet),
   };
 }

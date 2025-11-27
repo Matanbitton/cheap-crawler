@@ -33,6 +33,7 @@ const worker = createWorker(async (job) => {
       text: result.text,
       pagesScraped: result.pagesScraped,
       urls: result.urls,
+      emails: result.emails,
       tokenEstimate,
       originalTokenEstimate: truncated ? originalTokenEstimate : undefined,
       characterCount: result.text.length,
